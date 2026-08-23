@@ -1,0 +1,104 @@
+name: Decrypt env
+description: >-
+  Decrypt this repository's env/enc profile into the job environment using an age
+  identity supplied from a repository secret. Installs age (and sops when the
+  ciphertext needs it), asserts the required variables are present, and masks
+  every decrypted value in the workflow log.
+
+inputs:
+  age-key:
+    description: >-
+      The age identity (private key) that can decrypt this profile. Pass a
+      repository secret, never a literal. Its public half must be in
+      env/enc/.recipients, and the ciphertext must have been rotated since.
+    required: true
+  profile:
+    description: Profile to decrypt (default | ci | live | ...).
+    required: false
+    default: ci
+  require:
+    description: >-
+      Comma-separated variable names that must be present and non-empty after
+      decryption. The job fails before doing any work if one is missing.
+    required: false
+    default: ''
+  export:
+    description: >-
+      When 'true', append the decrypted variables to $GITHUB_ENV so later steps
+      see them. When 'false', the plaintext is left only at env/dec/ for a step
+      that reads the file itself.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Install age and sops
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v age >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age
+        fi
+        # sops is only needed when the ciphertext is in SOPS format.
+        enc="env/enc/.env.enc"
+        [ "${{ inputs.profile }}" = 'default' ] || enc="env/enc/.env.${{ inputs.profile }}.enc"
+        if [ -f "$enc" ] && grep -qE '^(sops_version=|sops:)' "$enc" && ! command -v sops >/dev/null 2>&1; then
+          ver=3.9.4
+          curl -fsSL "https://github.com/getsops/sops/releases/download/v${ver}/sops-v${ver}.linux.amd64" -o /usr/local/bin/sops
+          chmod +x /usr/local/bin/sops
+          sops --version --disable-version-check || sops --version || true
+        fi
+
+    - name: Decrypt profile
+      shell: bash
+      env:
+        ENV_CRYPTO_AGE_KEY: ${{ inputs.age-key }}
+      run: |
+        set -euo pipefail
+        [ -n "${ENV_CRYPTO_AGE_KEY:-}" ] || { echo "::error::age-key input is empty — is the repository secret set?"; exit 1; }
+        scripts/env-crypto.sh init >/dev/null
+        scripts/env-crypto.sh decrypt '${{ inputs.profile }}'
+
+    - name: Mask, verify, and export
+      shell: bash
+      run: |
+        set -euo pipefail
+        dec="env/dec/.env"
+        [ "${{ inputs.profile }}" = 'default' ] || dec="env/dec/.env.${{ inputs.profile }}"
+
+        # Mask before anything else can echo a value.
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in ''|'#'*) continue ;; esac
+          line="${line#export }"
+          value="${line#*=}"
+          [ ${#value} -ge 6 ] && echo "::add-mask::$value"
+        done < "$dec"
+
+        missing=''
+        IFS=',' read -ra required <<< "${{ inputs.require }}"
+        for name in "${required[@]}"; do
+          name="$(echo "$name" | tr -d '[:space:]')"
+          [ -n "$name" ] || continue
+          if ! grep -qE "^(export )?${name}=.+" "$dec"; then
+            missing="$missing $name"
+          fi
+        done
+        if [ -n "$missing" ]; then
+          echo "::error::profile '${{ inputs.profile }}' is missing required variables:$missing"
+          exit 1
+        fi
+
+        if [ '${{ inputs.export }}' = 'true' ]; then
+          # Values are masked above, so a value containing a newline would break
+          # $GITHUB_ENV framing — env-crypto rejects those at encrypt time, so a
+          # plain append is safe here.
+          while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            printf '%s\n' "${line#export }" >> "$GITHUB_ENV"
+          done < "$dec"
+        fi
+
+        count=$(grep -cvE '^[[:space:]]*(#|$)' "$dec" || true)
+        echo "decrypted profile '${{ inputs.profile }}': $count variables"

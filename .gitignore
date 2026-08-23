@@ -7,3 +7,6 @@ tmp
 temp
 tmp/worktrees
 temp/worktrees
+
+# env-crypto: decrypted secrets, never committed
+env/dec/
