@@ -1,0 +1,2 @@
+# age recipients that can decrypt benefactor-cc env files.
+# One per line. Generate with: scripts/env-crypto.sh keygen
