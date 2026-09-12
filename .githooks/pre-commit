@@ -9,6 +9,15 @@ set -o pipefail
 
 fail() { printf '\033[31mpre-commit: %s\033[0m\n' "$*" >&2; }
 
+# Assembled at runtime so the literals never appear in this file. See the
+# note at check 3 below.
+KEY_PATTERN="AGE-SECRET-""KEY-1|BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE"" KEY"
+CRED_PATTERN="SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
+CRED_PATTERN="$CRED_PATTERN|pat-(na|eu)1-[0-9a-f]{8}-"
+CRED_PATTERN="$CRED_PATTERN|AIza""[0-9A-Za-z_-]{35}"
+CRED_PATTERN="$CRED_PATTERN|xox""[baprs]-[0-9A-Za-z-]{20,}"
+CRED_PATTERN="$CRED_PATTERN|ghp""_[0-9A-Za-z]{36}"
+
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -n "$staged" ] || exit 0
 
@@ -34,13 +43,13 @@ while IFS= read -r path; do
   esac
 
   # 3. Private key material, wherever it lives.
-  #    Anchored on the PEM delimiters and on real age key material rather than
-  #    the bare prefixes: the unanchored form matched this hook's own source
-  #    (the alternation contains the literal AGE-SECRET-KEY-1), so the hook
-  #    flagged itself and could never be committed. It also fired on prose that
-  #    merely mentions BEGIN PRIVATE KEY.
+  #
+  # The patterns are assembled from fragments so this file does not contain
+  # the strings it searches for. Spelling them literally makes the hook match
+  # ITSELF the moment it is staged, which is both a false positive and — worse
+  # — the kind that trains people to reach for --no-verify.
   if git show ":$path" 2>/dev/null | head -c 8192 | grep -qE \
-      'AGE-SECRET-KEY-1[0-9A-Z]{50,}|-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----'; then
+      "$KEY_PATTERN"; then
     fail "$path contains a private key."
     violations=$((violations + 1)); continue
   fi
@@ -48,8 +57,7 @@ while IFS= read -r path; do
   # 4. Provider credentials pasted into a tracked file. Deliberately narrow —
   #    these prefixes are unambiguous, so false positives are rare enough that
   #    blocking is the right call.
-  if git show ":$path" 2>/dev/null | head -c 65536 | grep -qE \
-      'SG\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|pat-(na|eu)1-[0-9a-f]{8}-|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[0-9A-Za-z-]{20,}|ghp_[0-9A-Za-z]{36}'; then
+  if git show ":$path" 2>/dev/null | head -c 65536 | grep -qE "$CRED_PATTERN"; then
     case "$path" in
       *.example|*.sample|*.template|*/test/*|*.test.*|*docs/*) : ;;
       *)

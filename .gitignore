@@ -10,3 +10,10 @@ temp/worktrees
 
 # env-crypto: decrypted secrets, never committed
 env/dec/
+
+# env-crypto: decrypted secrets, never committed
+env/dec/
+# ...but the ENCRYPTED files must be committable. A broad `.env.*` rule
+# elsewhere in this file would otherwise match env/enc/.env.enc by
+# basename and silently exclude it.
+!env/enc/**

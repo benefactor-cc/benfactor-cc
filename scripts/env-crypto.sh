@@ -401,11 +401,32 @@ cmd_init() {
 !.gitignore
 IGNORE
 
-  if [ -f "$ROOT/.gitignore" ] && ! grep -qxF 'env/dec/' "$ROOT/.gitignore"; then
-    printf '\n# env-crypto: decrypted secrets, never committed\nenv/dec/\n' >> "$ROOT/.gitignore"
-    info "appended 'env/dec/' to .gitignore"
-  elif [ ! -f "$ROOT/.gitignore" ]; then
-    printf '# env-crypto: decrypted secrets, never committed\nenv/dec/\n' > "$ROOT/.gitignore"
+  # Two rules, and the second one is the non-obvious half. Most of these repos
+  # already carry a broad `.env.*` ignore, and gitignore patterns without a
+  # slash match a BASENAME at any depth — so `.env.*` silently swallows
+  # `env/enc/.env.enc`. The ciphertext is meant to be committed, so it has to
+  # be re-included explicitly or the whole scheme quietly stores nothing.
+  local block
+  block=$(printf '%s\n' \
+    '' \
+    '# env-crypto: decrypted secrets, never committed' \
+    'env/dec/' \
+    '# ...but the ENCRYPTED files must be committable. A broad `.env.*` rule' \
+    '# elsewhere in this file would otherwise match env/enc/.env.enc by' \
+    '# basename and silently exclude it.' \
+    '!env/enc/**')
+  [ -f "$ROOT/.gitignore" ] || : > "$ROOT/.gitignore"
+  if ! grep -qxF '!env/enc/**' "$ROOT/.gitignore"; then
+    printf '%s\n' "$block" >> "$ROOT/.gitignore"
+    info "wired env/dec + env/enc rules into .gitignore"
+  fi
+
+  # Prove it rather than assume it: a negation cannot re-include a file whose
+  # PARENT directory is excluded, so verify against the real ignore engine.
+  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git -C "$ROOT" check-ignore -q 'env/enc/.env.enc' 2>/dev/null; then
+      die "env/enc/.env.enc is still gitignored after init — the ciphertext could never be committed. Check for a rule excluding the env/ or env/enc/ directory itself."
+    fi
   fi
 
   if [ ! -f "$ENC_DIR/.recipients" ]; then
@@ -636,6 +657,11 @@ cmd_doctor() {
     local tracked; tracked=$(git -C "$ROOT" ls-files 'env/dec' | head -1 || true)
     if [ -n "$tracked" ]; then log "  ${C_RED}UNSAFE${C_OFF}      plaintext is tracked: $tracked — run: git rm -r --cached env/dec"
     else log "  ${C_GRN}ok${C_OFF}          no plaintext tracked under env/dec"; fi
+    if git -C "$ROOT" check-ignore -q 'env/enc/.env.enc' 2>/dev/null; then
+      log "  ${C_RED}UNSAFE${C_OFF}      env/enc/.env.enc is gitignored — ciphertext would never commit. Run: $0 init"
+    else
+      log "  ${C_GRN}ok${C_OFF}          env/enc ciphertext is committable"
+    fi
     local stray; stray=$(git -C "$ROOT" ls-files | grep -E '(^|/)\.env$|(^|/)\.env\.[a-z]+$' | grep -v '\.example$' | head -3 || true)
     if [ -n "$stray" ]; then log "  ${C_RED}UNSAFE${C_OFF}      tracked plaintext dotenv outside env/: $(printf '%s' "$stray" | tr '\n' ' ')"
     else log "  ${C_GRN}ok${C_OFF}          no tracked plaintext dotenv elsewhere"; fi
