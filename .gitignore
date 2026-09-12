@@ -17,3 +17,6 @@ env/dec/
 # elsewhere in this file would otherwise match env/enc/.env.enc by
 # basename and silently exclude it.
 !env/enc/**
+# Sanctioned scratch locations - AGENTS.md requires both, trailing-slash form
+tmp/
+temp/
