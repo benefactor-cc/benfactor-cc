@@ -46,6 +46,15 @@ if (failures.length === 0) {
   if (!/^User-agent:\s*\*\s*$[\s\S]*^Disallow:\s*\/\s*$/m.test(robots)) {
     fail('robots.txt must disallow all crawling');
   }
+  // In robots policy, an Allow: / rule can override a broad Disallow: /.
+  // Retired content must not acquire a crawl invitation through later edits.
+  if (/^\s*Allow\s*:/im.test(robots)) {
+    fail('retired robots.txt must never contain an Allow directive');
+  }
+  if (/^\s*Sitemap\s*:/im.test(robots)) {
+    fail('retired robots.txt must not advertise stale site pages');
+  }
+
 
   for (const [path, content] of [
     ['index.html', index],
